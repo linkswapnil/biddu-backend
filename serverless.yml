@@ -1,0 +1,54 @@
+service: biddu-backend
+frameworkVersion: '4'
+
+provider:
+  name: aws
+  runtime: nodejs20.x
+  memorySize: 1024
+  timeout: 29
+  region: ap-south-1
+  stage: ${opt:stage, 'dev'}
+  environment:
+    NODE_OPTIONS: --enable-source-maps
+    REGION: ${env:REGION, 'ap-south-1'}
+    COGNITO_USER_POOL_ID: ap-south-1_q7DmHAlCR
+    COGNITO_CLIENT_ID: 6km8aqd3h87e60ahso1co5d7vu
+  httpApi:
+    authorizers:
+      cognitoJwt:
+        type: jwt
+        identitySource: $request.header.Authorization
+        issuerUrl: https://cognito-idp.ap-south-1.amazonaws.com/ap-south-1_q7DmHAlCR
+        audience:
+          - 4hbvidigiu5s863r4n3m1la8gm
+
+functions:
+  graphql:
+    handler: dist/handler.graphql
+    events:
+      # Public endpoint (no auth) - allows queries like greetings
+      - httpApi:
+          method: ANY
+          path: /graphql
+      # JWT-protected endpoint for privileged operations like products
+      - httpApi:
+          method: ANY
+          path: /graphql-jwt
+          authorizer: cognitoJwt
+  authSignup:
+    handler: dist/auth.signup
+    events:
+      - httpApi:
+          method: POST
+          path: /auth/signup
+          authorizer: cognitoJwt
+
+package:
+  individually: true
+  patterns:
+    - 'dist/**'
+    - '!**/*.ts'
+    - '!src/**'
+
+plugins:
+  - serverless-offline
