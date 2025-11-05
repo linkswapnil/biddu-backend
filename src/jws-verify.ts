@@ -3,47 +3,82 @@ import 'dotenv/config';
 import jwksClient from 'jwks-rsa';
 import jwt, { JwtPayload } from 'jsonwebtoken';
 
-const REGION = process.env.AWS_REGION;
-const COGNITO_USER_POOL_ID = process.env.COGNITO_USER_POOL_ID as string;
-const CLIENT_ID = process.env.COGNITO_CLIENT_ID as string;
+const REGION = process.env.REGION || process.env.REGION;
+const ADMIN_USER_POOL_ID = process.env.COGNITO_USER_POOL_ID as string;
+const ADMIN_CLIENT_ID = process.env.COGNITO_CLIENT_ID as string;
+const BIDDU_USER_POOL_ID = process.env.OTP_USER_POOL_ID as string;
+const BIDDU_CLIENT_ID = process.env.OTP_CLIENT_ID as string;
 
-const ISSUER = `https://cognito-idp.${REGION}.amazonaws.com/${COGNITO_USER_POOL_ID}`;
+const ADMIN_ISSUER = `https://cognito-idp.${REGION}.amazonaws.com/${ADMIN_USER_POOL_ID}`;
+const BIDDU_ISSUER = `https://cognito-idp.${REGION}.amazonaws.com/${BIDDU_USER_POOL_ID}`;
 
-const client = jwksClient({
-  jwksUri: `${ISSUER}/.well-known/jwks.json`,
+const adminJwks = jwksClient({
+  jwksUri: `${ADMIN_ISSUER}/.well-known/jwks.json`,
   cache: true,
   cacheMaxEntries: 5,
-  cacheMaxAge: 10 * 60 * 1000, // 10 minutes
+  cacheMaxAge: 10 * 60 * 1000,
   jwksRequestsPerMinute: 10,
 });
 
-function getKey(header: jwt.JwtHeader, callback: jwt.SigningKeyCallback) {
-  if (!header.kid) return callback(new Error('No KID in token'), undefined);
-  client.getSigningKey(header.kid, (err: any, key: any) => {
-    if (err) return callback(err as Error, undefined);
-    const signingKey = key.getPublicKey();
-    callback(null, signingKey);
-  });
+const bidduJwks = jwksClient({
+  jwksUri: `${BIDDU_ISSUER}/.well-known/jwks.json`,
+  cache: true,
+  cacheMaxEntries: 5,
+  cacheMaxAge: 10 * 60 * 1000,
+  jwksRequestsPerMinute: 10,
+});
+
+function getKeyFrom(client: ReturnType<typeof jwksClient>) {
+  return function getKey(header: jwt.JwtHeader, callback: jwt.SigningKeyCallback) {
+    if (!header.kid) return callback(new Error('No KID in token'), undefined);
+    client.getSigningKey(header.kid, (err: any, key: any) => {
+      if (err) return callback(err as Error, undefined);
+      const signingKey = key.getPublicKey();
+      callback(null, signingKey);
+    });
+  };
 }
 
 export async function verifyIdToken(token: string): Promise<JwtPayload> {
-  return new Promise((resolve, reject) => {
-    jwt.verify(
-      token,
-      getKey,
-      {
-        algorithms: ['RS256'],
-        audience: CLIENT_ID,
-        issuer: ISSUER,
-        clockTolerance: 5, // seconds
-      },
-      (err, decoded) => {
-        if (err) return reject(err);
-        const payload = decoded as JwtPayload;
-        // extra checks (optional):
-        if (payload.token_use !== 'id') return reject(new Error('Not an ID token'));
-        resolve(payload);
-      }
-    );
-  });
+  // Try admin pool first
+  try {
+    return await new Promise((resolve, reject) => {
+      jwt.verify(
+        token,
+        getKeyFrom(adminJwks),
+        {
+          algorithms: ['RS256'],
+          audience: ADMIN_CLIENT_ID,
+          issuer: ADMIN_ISSUER,
+          clockTolerance: 5,
+        },
+        (err, decoded) => {
+          if (err) return reject(err);
+          const payload = decoded as JwtPayload;
+          if ((payload as any).token_use !== 'id') return reject(new Error('Not an ID token'));
+          resolve(payload);
+        }
+      );
+    });
+  } catch (_adminErr) {
+    // Fallback to biddu user pool
+    return await new Promise((resolve, reject) => {
+      jwt.verify(
+        token,
+        getKeyFrom(bidduJwks),
+        {
+          algorithms: ['RS256'],
+          audience: BIDDU_CLIENT_ID,
+          issuer: BIDDU_ISSUER,
+          clockTolerance: 5,
+        },
+        (err, decoded) => {
+          if (err) return reject(err);
+          const payload = decoded as JwtPayload;
+          if ((payload as any).token_use !== 'id') return reject(new Error('Not an ID token'));
+          resolve(payload);
+        }
+      );
+    });
+  }
 }

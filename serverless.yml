@@ -11,8 +11,15 @@ provider:
   environment:
     NODE_OPTIONS: --enable-source-maps
     REGION: ${env:REGION, 'ap-south-1'}
-    COGNITO_USER_POOL_ID: ap-south-1_q7DmHAlCR
-    COGNITO_CLIENT_ID: 6km8aqd3h87e60ahso1co5d7vu
+    BIDDU_USERS_TABLE: ${self:service}-users-${self:provider.stage}
+    COGNITO_USER_POOL_ID: ${env:COGNITO_USER_POOL_ID}
+    COGNITO_CLIENT_ID: ${env:COGNITO_CLIENT_ID}
+    OTP_USER_POOL_ID: ${env:OTP_USER_POOL_ID}
+    OTP_CLIENT_ID: ${env:OTP_CLIENT_ID}
+    OTP_RATE_LIMIT_TABLE: ${self:service}-otp-rate-limit-${self:provider.stage}
+    OTP_STORE_TABLE: ${self:service}-otp-store-${self:provider.stage}
+    BIDDU_PRODUCTS_TABLE: ${self:service}-products-${self:provider.stage}
+    BIDDU_PRODUCT_LOCATIONS_TABLE: ${self:service}-product-locations-v4-${self:provider.stage}
   httpApi:
     authorizers:
       cognitoJwt:
@@ -21,7 +28,50 @@ provider:
         issuerUrl: https://cognito-idp.ap-south-1.amazonaws.com/ap-south-1_q7DmHAlCR
         audience:
           - 4hbvidigiu5s863r4n3m1la8gm
-
+      bidduUserJwt:
+        type: jwt
+        identitySource: $request.header.Authorization
+        issuerUrl: https://cognito-idp.ap-south-1.amazonaws.com/ap-south-1_KyVlxi6z0
+        audience:
+          - 439j25rmg7ti6v1mdbfdku27a1
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - cognito-idp:AdminInitiateAuth
+            - cognito-idp:AdminCreateUser
+            - cognito-idp:AdminSetUserPassword
+            - cognito-idp:AdminUpdateUserAttributes
+            - cognito-idp:AdminGetUser
+            - cognito-idp:ListUsers
+            - cognito-idp:SignUp
+            - cognito-idp:InitiateAuth
+            - cognito-idp:RespondToAuthChallenge
+            - cognito-idp:ConfirmSignUp
+          Resource: 
+            - arn:aws:cognito-idp:${self:provider.region}:*:userpool/${self:provider.environment.COGNITO_USER_POOL_ID}
+            - arn:aws:cognito-idp:${self:provider.region}:*:userpool/${self:provider.environment.OTP_USER_POOL_ID}
+        - Effect: Allow
+          Action:
+            - dynamodb:PutItem
+            - dynamodb:GetItem
+            - dynamodb:UpdateItem
+            - dynamodb:DeleteItem
+            - dynamodb:Query
+            - dynamodb:Scan
+          Resource:
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.OTP_RATE_LIMIT_TABLE}
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.OTP_RATE_LIMIT_TABLE}/index/*
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.OTP_STORE_TABLE}
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.OTP_STORE_TABLE}/index/*
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.BIDDU_USERS_TABLE}
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.BIDDU_USERS_TABLE}/index/*
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.BIDDU_PRODUCTS_TABLE}
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.BIDDU_PRODUCTS_TABLE}/index/*
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.BIDDU_PRODUCT_LOCATIONS_TABLE}
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.BIDDU_PRODUCT_LOCATIONS_TABLE}/index/*
+       
 functions:
   graphql:
     handler: dist/handler.graphql
@@ -35,13 +85,81 @@ functions:
           method: ANY
           path: /graphql-jwt
           authorizer: cognitoJwt
-  authSignup:
-    handler: dist/auth.signup
+  # Authentication functions
+  sendOTP:
+    handler: dist/auth.sendOTP
     events:
       - httpApi:
           method: POST
-          path: /auth/signup
-          authorizer: cognitoJwt
+          path: /auth/send-otp
+  
+  verifyOTP:
+    handler: dist/auth.verifyOTP
+    events:
+      - httpApi:
+          method: POST
+          path: /auth/verify-otp
+
+  addProduct:
+    handler: dist/product.addProduct
+    events:
+      - httpApi:
+          method: POST
+          path: /product/add
+          authorizer: bidduUserJwt
+
+  verifyEmailId:
+    handler: dist/auth.verifyEmailId
+    events:
+      - httpApi:
+          method: POST
+          path: /auth/verify-email
+  
+  updateProfile:
+    handler: dist/auth.updateProfile
+    events:
+      - httpApi:
+          method: POST
+          path: /auth/update-profile
+          authorizer: bidduUserJwt
+
+# resources:
+#   Resources:
+    # DynamoDB table for OTP rate limiting
+    # OTPRateLimitTable:
+    #   Type: AWS::DynamoDB::Table
+    #   Properties:
+    #     TableName: ${self:provider.environment.OTP_RATE_LIMIT_TABLE}
+    #     BillingMode: PAY_PER_REQUEST
+    #     AttributeDefinitions:
+    #       - AttributeName: phoneNumber
+    #         AttributeType: S
+    #       - AttributeName: timestamp
+    #         AttributeType: N
+    #     KeySchema:
+    #       - AttributeName: phoneNumber
+    #         KeyType: HASH
+    #       - AttributeName: timestamp
+    #         KeyType: RANGE
+    #     TimeToLiveSpecification:
+    #       AttributeName: ttl
+    #       Enabled: true
+
+    # DynamoDB table for storing OTPs
+    # OTPStoreTable:
+    #   Type: AWS::DynamoDB::Table
+    #   Properties:
+    #     TableName: ${self:provider.environment.OTP_STORE_TABLE}
+    #     BillingMode: PAY_PER_REQUEST
+    #     AttributeDefinitions:
+    #       - AttributeName: phoneNumber
+    #         AttributeType: S
+    #     KeySchema:
+    #       - AttributeName: phoneNumber
+    #         KeyType: HASH
+    #     TimeToLiveSpecification:
+    #       AttributeName: ttl
+    #       Enabled: true
 
 package:
   individually: true
@@ -52,3 +170,88 @@ package:
 
 plugins:
   - serverless-offline
+
+resources:
+  Resources:
+    BidduUsersTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.BIDDU_USERS_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: sub
+            AttributeType: S
+          - AttributeName: phoneNumber
+            AttributeType: S
+          - AttributeName: emailId
+            AttributeType: S
+        KeySchema:
+          - AttributeName: sub
+            KeyType: HASH
+        GlobalSecondaryIndexes:
+          - IndexName: phoneNumber-index
+            KeySchema:
+              - AttributeName: phoneNumber
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
+          - IndexName: emailId-index
+            KeySchema:
+              - AttributeName: emailId
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
+    BidduProductsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.BIDDU_PRODUCTS_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: productId
+            AttributeType: S
+          - AttributeName: userId
+            AttributeType: S
+        KeySchema:
+          - AttributeName: productId
+            KeyType: HASH
+        GlobalSecondaryIndexes:
+          - IndexName: userId-index
+            KeySchema:
+              - AttributeName: userId
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
+    BidduProductLocationsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.BIDDU_PRODUCT_LOCATIONS_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: hashKey
+            AttributeType: N
+          - AttributeName: rangeKey
+            AttributeType: S
+          - AttributeName: geohash
+            AttributeType: N
+          - AttributeName: productId
+            AttributeType: S
+        KeySchema:
+          - AttributeName: hashKey
+            KeyType: HASH
+          - AttributeName: rangeKey
+            KeyType: RANGE
+        GlobalSecondaryIndexes:
+          - IndexName: geohash-index
+            KeySchema:
+              - AttributeName: hashKey
+                KeyType: HASH
+              - AttributeName: geohash
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+          - IndexName: productId-index
+            KeySchema:
+              - AttributeName: productId
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
