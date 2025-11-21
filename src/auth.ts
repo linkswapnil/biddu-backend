@@ -1,6 +1,7 @@
 import {
   CognitoIdentityProviderClient,
   AdminInitiateAuthCommand,
+  InitiateAuthCommand,
   AdminCreateUserCommand,
   AdminGetUserCommand,
   AdminSetUserPasswordCommand,
@@ -102,17 +103,23 @@ async function storeOTP(phoneNumber: string, otp: string): Promise<void> {
   const now = Date.now();
   const ttl = Math.floor(now / 1000) + CONFIG.OTP_EXPIRY_SECONDS;
 
-  await docClient.send(
-    new PutCommand({
-      TableName: CONFIG.OTP_STORE_TABLE,
-      Item: {
-        phoneNumber,
-        otp,
-        createdAt: now,
-        ttl,
-      },
-    })
-  );
+  try {
+    const result = await docClient.send(
+      new PutCommand({
+        TableName: CONFIG.OTP_STORE_TABLE,
+        Item: {
+          phoneNumber,
+          otp,
+          createdAt: now,
+          ttl,
+        },
+      })
+    );
+    console.log("OTP stored successfully:", result);
+  } catch (error) {
+    console.error("Error storing OTP:", error);
+    throw error;
+  }
 }
 
 // Helper: Verify and get OTP
@@ -634,6 +641,64 @@ export async function updateProfile(
   }
 }
 
+// Mutation: login
+export async function login(args: { username: string; password: string }) {
+  const { username, password } = args;
+
+  if (!username || !password) {
+    return {
+      success: false,
+      message: "Username and password are required",
+      accessToken: null,
+      idToken: null,
+      refreshToken: null,
+    };
+  }
+
+  try {
+    const authResponse = await cognitoClient.send(
+      new InitiateAuthCommand({
+        AuthFlow: "USER_PASSWORD_AUTH",
+        ClientId: CONFIG.COGNITO_CLIENT_ID,
+        AuthParameters: {
+          USERNAME: username,
+          PASSWORD: password,
+        },
+      })
+    );
+
+    return {
+      success: true,
+      message: "Login successful",
+      accessToken: authResponse.AuthenticationResult?.AccessToken || null,
+      idToken: authResponse.AuthenticationResult?.IdToken || null,
+      refreshToken: authResponse.AuthenticationResult?.RefreshToken || null,
+    };
+  } catch (error: any) {
+    console.error("Error during login:", error);
+    
+    // Handle specific Cognito errors
+    let message = "Login failed";
+    if (error.name === "NotAuthorizedException") {
+      message = "Incorrect username or password";
+    } else if (error.name === "UserNotFoundException") {
+      message = "User not found";
+    } else if (error.name === "UserNotConfirmedException") {
+      message = "User account is not confirmed";
+    } else if (error.message) {
+      message = error.message;
+    }
+
+    return {
+      success: false,
+      message,
+      accessToken: null,
+      idToken: null,
+      refreshToken: null,
+    };
+  }
+}
+
 // Helper function
 function generateTemporaryPassword(): string {
   const chars =
@@ -702,6 +767,18 @@ export const handler = {
       username: event.requestContext?.authorizer?.jwt?.claims?.sub,
     };
     const result = await updateProfile(body, context);
+    return {
+      statusCode: 200,
+      headers: {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*",
+      },
+      body: JSON.stringify(result),
+    };
+  },
+  login: async (event: any) => {
+    const body = JSON.parse(event.body || "{}");
+    const result = await login(body);
     return {
       statusCode: 200,
       headers: {

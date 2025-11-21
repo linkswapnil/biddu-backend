@@ -19,7 +19,14 @@ provider:
     OTP_RATE_LIMIT_TABLE: ${self:service}-otp-rate-limit-${self:provider.stage}
     OTP_STORE_TABLE: ${self:service}-otp-store-${self:provider.stage}
     BIDDU_PRODUCTS_TABLE: ${self:service}-products-${self:provider.stage}
-    BIDDU_PRODUCT_LOCATIONS_TABLE: ${self:service}-product-locations-v4-${self:provider.stage}
+    BIDDU_PRODUCT_LOCATIONS_TABLE: ${self:service}-product-locations-${self:provider.stage}
+    BIDDU_PRODUCT_IMAGES_BUCKET: ${self:service}-product-images-${self:provider.stage}
+    BIDDU_CATEGORIES_TABLE: ${self:service}-categories-${self:provider.stage}
+    BIDDU_SUBCATEGORIES_TABLE: ${self:service}-subcategories-${self:provider.stage}
+    TWILIO_ACCOUNT_SID: ${env:TWILIO_ACCOUNT_SID}
+    TWILIO_AUTH_TOKEN: ${env:TWILIO_AUTH_TOKEN}
+    TWILIO_PHONE_NUMBER: ${env:TWILIO_PHONE_NUMBER}
+    ENABLE_SMS: ${env:ENABLE_SMS, 'false'}
   httpApi:
     authorizers:
       cognitoJwt:
@@ -37,6 +44,15 @@ provider:
   iam:
     role:
       statements:
+        - Effect: Allow
+          Action:
+            - s3:PutObject
+            - s3:GetObject
+            - s3:DeleteObject
+            - s3:ListBucket
+          Resource:
+            - arn:aws:s3:::${self:provider.environment.BIDDU_PRODUCT_IMAGES_BUCKET}
+            - arn:aws:s3:::${self:provider.environment.BIDDU_PRODUCT_IMAGES_BUCKET}/*      
         - Effect: Allow
           Action:
             - cognito-idp:AdminInitiateAuth
@@ -71,6 +87,10 @@ provider:
             - arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.BIDDU_PRODUCTS_TABLE}/index/*
             - arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.BIDDU_PRODUCT_LOCATIONS_TABLE}
             - arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.BIDDU_PRODUCT_LOCATIONS_TABLE}/index/*
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.BIDDU_CATEGORIES_TABLE}
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.BIDDU_CATEGORIES_TABLE}/index/*
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.BIDDU_SUBCATEGORIES_TABLE}
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.BIDDU_SUBCATEGORIES_TABLE}/index/*
        
 functions:
   graphql:
@@ -123,6 +143,30 @@ functions:
           path: /auth/update-profile
           authorizer: bidduUserJwt
 
+  getProductImageUploadUrl:
+    handler: dist/product.handler.getProductImageUploadUrl
+    events:
+      - httpApi:
+          method: POST
+          path: /product-image/upload-url
+          authorizer: bidduUserJwt
+
+  deleteProductImage:
+    handler: dist/product.handler.deleteProductImage
+    events:
+      - httpApi:
+          method: DELETE
+          path: /product-image/delete
+          authorizer: bidduUserJwt
+
+  # adminDeleteProductImage:
+  #   handler: dist/image.adminDeleteProductImage
+  #   events:
+  #     - httpApi:
+  #         method: DELETE
+  #         path: /admin/product-image/delete
+  #         authorizer: cognitoJwt
+
 # resources:
 #   Resources:
     # DynamoDB table for OTP rate limiting
@@ -173,6 +217,42 @@ plugins:
 
 resources:
   Resources:
+    BidduProductImagesBucketNew:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:provider.environment.BIDDU_PRODUCT_IMAGES_BUCKET}
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: false
+          IgnorePublicAcls: false
+          BlockPublicPolicy: false
+          RestrictPublicBuckets: false
+        CorsConfiguration:
+          CorsRules:
+            - AllowedOrigins:
+                - "*"
+              AllowedMethods:
+                - GET
+                - PUT
+                - DELETE
+                - POST
+              AllowedHeaders:
+                - "*"
+              ExposedHeaders:
+                - ETag
+
+    PublicReadBucketPolicy:
+      Type: AWS::S3::BucketPolicy
+      Properties:
+        Bucket: ${self:provider.environment.BIDDU_PRODUCT_IMAGES_BUCKET}
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Sid: PublicReadGetObject
+              Effect: Allow
+              Principal: "*"
+              Action: "s3:GetObject"
+              Resource: "arn:aws:s3:::${self:provider.environment.BIDDU_PRODUCT_IMAGES_BUCKET}/*"
+
     BidduUsersTable:
       Type: AWS::DynamoDB::Table
       Properties:
@@ -227,31 +307,52 @@ resources:
         TableName: ${self:provider.environment.BIDDU_PRODUCT_LOCATIONS_TABLE}
         BillingMode: PAY_PER_REQUEST
         AttributeDefinitions:
-          - AttributeName: hashKey
-            AttributeType: N
-          - AttributeName: rangeKey
-            AttributeType: S
-          - AttributeName: geohash
-            AttributeType: N
           - AttributeName: productId
             AttributeType: S
+          - AttributeName: lat
+            AttributeType: N
+          - AttributeName: lng
+            AttributeType: N
         KeySchema:
-          - AttributeName: hashKey
+          - AttributeName: productId
             KeyType: HASH
-          - AttributeName: rangeKey
-            KeyType: RANGE
         GlobalSecondaryIndexes:
-          - IndexName: geohash-index
+          - IndexName: lat-lng-index
             KeySchema:
-              - AttributeName: hashKey
+              - AttributeName: lat
                 KeyType: HASH
-              - AttributeName: geohash
+              - AttributeName: lng
                 KeyType: RANGE
             Projection:
               ProjectionType: ALL
-          - IndexName: productId-index
+    BidduCategoriesTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.BIDDU_CATEGORIES_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: categoryId
+            AttributeType: S
+        KeySchema:
+          - AttributeName: categoryId
+            KeyType: HASH
+    BidduSubCategoriesTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.BIDDU_SUBCATEGORIES_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: subCategoryId
+            AttributeType: S
+          - AttributeName: categoryId
+            AttributeType: S
+        KeySchema:
+          - AttributeName: subCategoryId
+            KeyType: HASH
+        GlobalSecondaryIndexes:
+          - IndexName: categoryId-index
             KeySchema:
-              - AttributeName: productId
+              - AttributeName: categoryId
                 KeyType: HASH
             Projection:
               ProjectionType: ALL
